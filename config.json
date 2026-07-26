@@ -1,0 +1,17 @@
+{
+  "can_channel": "can0",
+  "serial_hex": "115171102034",
+  "psu_id": 1,
+  "login_interval_seconds": 5,
+  "sample_interval_seconds": 10,
+  "offline_after_seconds": 3,
+  "control_enabled": false,
+  "target_voltage": 53.5,
+  "current_limit": 20.0,
+  "min_voltage": 44.5,
+  "max_voltage": 54.4,
+  "min_current": 1.0,
+  "max_current": 35.0,
+  "ovp_voltage": 57.6,
+  "database_path": "/opt/flatpack-dashboard/data/flatpack.db"
+}

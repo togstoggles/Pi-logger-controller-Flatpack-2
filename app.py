@@ -41,8 +41,21 @@ def settings():
             body.get("target_voltage"),
             body.get("current_limit"),
             body.get("control_enabled", False),
+            body.get("control_mode", "manual"),
+            body.get("generator_power_target"),
+            body.get("generator_calibration_factor"),
         )
         return jsonify(ok=True, settings=ctl.snapshot()["settings"])
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@app.route("/api/calibrate-generator", methods=["POST"])
+def calibrate_generator():
+    body = request.get_json(force=True)
+    try:
+        factor = ctl.calibrate_generator(body.get("meter_watts"))
+        return jsonify(ok=True, calibration_factor=factor, settings=ctl.snapshot()["settings"])
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 400
 

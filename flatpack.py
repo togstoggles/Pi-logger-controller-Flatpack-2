@@ -2,13 +2,13 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import struct
+import subprocess
 import threading
 import time
 from collections import deque
-
-import can
 
 STATES = {
     0x04: "Constant voltage",
@@ -16,6 +16,8 @@ STATES = {
     0x0C: "Alarm",
     0x10: "Walk-in",
 }
+
+CANDUMP_RE = re.compile(r"^\((?P<ts>[0-9.]+)\)\s+\S+\s+(?P<id>[0-9A-Fa-f]{8})#(?P<data>[0-9A-Fa-f]*)$")
 
 
 class FlatpackController:
@@ -25,8 +27,8 @@ class FlatpackController:
             self.cfg = json.load(handle)
 
         self.lock = threading.RLock()
-        self.bus = None
         self.stop_event = threading.Event()
+        self.reader = None
         self.last_frame = 0.0
         self.last_login = 0.0
         self.last_control = 0.0
@@ -34,6 +36,9 @@ class FlatpackController:
         self.energy_wh = 0.0
         self.energy_t = 0.0
         self.raw = deque(maxlen=100)
+        self.rx_count = 0
+        self.status_count = 0
+        self.last_error = None
         self.state = {
             "online": False,
             "state": "Offline",
@@ -82,38 +87,22 @@ class FlatpackController:
             json.dump(self.cfg, handle, indent=2)
         os.replace(temp_path, self.path)
 
-    def connect(self):
-        try:
-            self.bus = can.interface.Bus(
-                channel=self.cfg["can_channel"],
-                bustype="socketcan",
-            )
-            return True
-        except Exception as exc:
-            logging.warning("CAN connect failed: %s", exc)
-            self.bus = None
-            return False
-
     def send(self, arbitration_id, data):
-        if self.bus is None and not self.connect():
-            return False
+        frame = "%08X#%s" % (arbitration_id, bytes(data).hex().upper())
         try:
-            self.bus.send(
-                can.Message(
-                    arbitration_id=arbitration_id,
-                    data=data,
-                    is_extended_id=True,
-                ),
-                timeout=0.5,
+            result = subprocess.run(
+                ["cansend", self.cfg["can_channel"], frame],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2,
+                universal_newlines=True,
             )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or "cansend failed")
             return True
         except Exception as exc:
-            logging.warning("CAN send failed: %s", exc)
-            try:
-                self.bus.shutdown()
-            except Exception:
-                pass
-            self.bus = None
+            self.last_error = "CAN send failed: %s" % exc
+            logging.warning(self.last_error)
             return False
 
     def login(self):
@@ -134,7 +123,6 @@ class FlatpackController:
     def setpoints(self):
         if not self.cfg["control_enabled"]:
             return False
-
         voltage = float(self.cfg["target_voltage"])
         current = float(self.cfg["current_limit"])
         self.validate(voltage, current)
@@ -160,7 +148,7 @@ class FlatpackController:
             self.save()
         if enabled:
             self.login()
-            time.sleep(0.05)
+            time.sleep(0.1)
             self.setpoints()
 
     def default_voltage(self, voltage):
@@ -170,15 +158,13 @@ class FlatpackController:
         payload = b"\x29\x15\x00" + struct.pack("<H", round(voltage * 100))
         return self.send(0x05009C00, payload)
 
-    def decode(self, message):
-        can_id = message.arbitration_id
-        if (can_id & 0xFF00FF00) != 0x05004000 or len(message.data) != 8:
-            return
+    def decode(self, can_id, data):
+        if can_id != 0x05014004 or len(data) != 8:
+            return False
 
-        data = bytes(message.data)
         now = time.time()
-        current = struct.unpack("<H", data[1:3])[0] / 10
-        voltage = struct.unpack("<H", data[3:5])[0] / 100
+        current = struct.unpack("<H", data[1:3])[0] / 10.0
+        voltage = struct.unpack("<H", data[3:5])[0] / 100.0
         input_voltage = struct.unpack("<H", data[5:7])[0]
         power = voltage * current
         state_code = can_id & 0xFF
@@ -189,9 +175,10 @@ class FlatpackController:
                 self.energy_wh += float(self.state["power"]) * elapsed / 3600
             self.energy_t = now
             self.last_frame = now
+            self.status_count += 1
             self.state.update(
                 online=True,
-                state=STATES.get(state_code, "Unknown 0x%02X" % state_code),
+                state=STATES.get(state_code, "Status 0x%02X" % state_code),
                 state_code=state_code,
                 voltage=round(voltage, 2),
                 current=round(current, 1),
@@ -203,6 +190,64 @@ class FlatpackController:
                 last_seen=now,
                 can_id="0x%08X" % can_id,
             )
+        return True
+
+    def _start_reader(self):
+        if self.reader and self.reader.poll() is None:
+            return
+        self.reader = subprocess.Popen(
+            ["candump", "-L", self.cfg["can_channel"]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+        )
+        logging.info("Started candump reader on %s", self.cfg["can_channel"])
+
+    def _read_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                self._start_reader()
+                line = self.reader.stdout.readline()
+                if not line:
+                    code = self.reader.poll()
+                    self.last_error = "candump exited with code %s" % code
+                    logging.warning(self.last_error)
+                    time.sleep(1)
+                    self.reader = None
+                    continue
+
+                line = line.strip()
+                match = CANDUMP_RE.match(line)
+                if not match:
+                    continue
+
+                can_id = int(match.group("id"), 16)
+                data_hex = match.group("data")
+                if len(data_hex) % 2:
+                    continue
+                data = bytes.fromhex(data_hex)
+                self.rx_count += 1
+
+                with self.lock:
+                    self.raw.appendleft({
+                        "timestamp": round(time.time(), 3),
+                        "id": "0x%08X" % can_id,
+                        "data": data.hex(" ").upper(),
+                        "dlc": len(data),
+                    })
+
+                self.decode(can_id, data)
+            except Exception as exc:
+                self.last_error = "CAN reader error: %s" % exc
+                logging.exception(self.last_error)
+                if self.reader:
+                    try:
+                        self.reader.terminate()
+                    except Exception:
+                        pass
+                self.reader = None
+                time.sleep(1)
 
     def sample(self):
         with self.lock:
@@ -211,15 +256,9 @@ class FlatpackController:
         conn.execute(
             "INSERT INTO samples VALUES(?,?,?,?,?,?,?,?,?)",
             (
-                time.time(),
-                state["voltage"],
-                state["current"],
-                state["power"],
-                state["input_voltage"],
-                state["temp_inlet"],
-                state["temp_outlet"],
-                state["state"],
-                int(state["online"]),
+                time.time(), state["voltage"], state["current"], state["power"],
+                state["input_voltage"], state["temp_inlet"], state["temp_outlet"],
+                state["state"], int(state["online"]),
             ),
         )
         conn.commit()
@@ -229,20 +268,12 @@ class FlatpackController:
         cutoff = time.time() - max(1, min(int(hours), 744)) * 3600
         conn = self._db()
         rows = conn.execute(
-            "SELECT * FROM samples WHERE timestamp>=? ORDER BY timestamp",
-            (cutoff,),
+            "SELECT * FROM samples WHERE timestamp>=? ORDER BY timestamp", (cutoff,)
         ).fetchall()
         conn.close()
         keys = [
-            "timestamp",
-            "voltage",
-            "current",
-            "power",
-            "input_voltage",
-            "temp_inlet",
-            "temp_outlet",
-            "state",
-            "online",
+            "timestamp", "voltage", "current", "power", "input_voltage",
+            "temp_inlet", "temp_outlet", "state", "online",
         ]
         return [dict(zip(keys, row)) for row in rows]
 
@@ -255,27 +286,24 @@ class FlatpackController:
             snapshot["settings"] = {
                 key: self.cfg[key]
                 for key in [
-                    "control_enabled",
-                    "target_voltage",
-                    "current_limit",
-                    "min_voltage",
-                    "max_voltage",
-                    "min_current",
-                    "max_current",
+                    "control_enabled", "target_voltage", "current_limit",
+                    "min_voltage", "max_voltage", "min_current", "max_current",
                     "ovp_voltage",
                 ]
             }
             snapshot["raw_frames"] = list(self.raw)[:25]
+            snapshot["diagnostics"] = {
+                "rx_count": self.rx_count,
+                "status_count": self.status_count,
+                "last_error": self.last_error,
+                "backend": "candump/cansend",
+            }
             return snapshot
 
     def run(self):
+        threading.Thread(target=self._read_loop, daemon=True).start()
         while not self.stop_event.is_set():
             now = time.time()
-
-            if self.bus is None and not self.connect():
-                self.stop_event.wait(2)
-                continue
-
             if now - self.last_login >= float(self.cfg["login_interval_seconds"]):
                 self.login()
                 self.last_login = now
@@ -287,27 +315,8 @@ class FlatpackController:
                     logging.error("Control blocked: %s", exc)
                 self.last_control = now
 
-            try:
-                message = self.bus.recv(0.25)
-                if message:
-                    with self.lock:
-                        self.raw.appendleft(
-                            {
-                                "timestamp": round(time.time(), 3),
-                                "id": "0x%08X" % message.arbitration_id,
-                                "data": bytes(message.data).hex(" ").upper(),
-                                "dlc": message.dlc,
-                            }
-                        )
-                    self.decode(message)
-            except Exception as exc:
-                logging.warning("CAN receive failed: %s", exc)
-                try:
-                    self.bus.shutdown()
-                except Exception:
-                    pass
-                self.bus = None
-
             if now - self.last_sample >= float(self.cfg["sample_interval_seconds"]):
                 self.sample()
                 self.last_sample = now
+
+            self.stop_event.wait(0.25)

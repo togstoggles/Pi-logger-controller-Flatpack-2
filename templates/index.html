@@ -16,6 +16,7 @@
     <article><label>OUTPUT VOLTAGE</label><b id="v">—</b><span>V</span></article>
     <article><label>OUTPUT CURRENT</label><b id="a">—</b><span>A</span></article>
     <article><label>OUTPUT POWER</label><b id="w">—</b><span>W</span></article>
+    <article><label>EST. GENERATOR LOAD</label><b id="gw">—</b><span>W</span></article>
     <article><label>SESSION ENERGY</label><b id="kwh">—</b><span>kWh</span></article>
     <article><label>GENERATOR INPUT</label><b id="vin">—</b><span>V AC</span></article>
     <article><label>INLET / OUTLET</label><b id="temps">—</b><span>°C</span></article>
@@ -41,8 +42,24 @@
     <article class="panel">
       <h2>Guarded control</h2>
       <div class="warning">Disabled by default. Keep battery/BMS protection independent.</div>
+      <label>Control mode
+        <select id="cm">
+          <option value="manual">Manual current limit</option>
+          <option value="constant_power">Generator constant power</option>
+        </select>
+      </label>
       <label>Target voltage<input id="tv" type="number" step=".1"><small id="vl"></small></label>
-      <label>Current limit<input id="ci" type="number" step=".5"><small id="cl"></small></label>
+      <label>Manual current limit<input id="ci" type="number" step=".5"><small id="cl"></small></label>
+      <div id="power-controls">
+        <label>Generator power target<input id="gp" type="number" step="10"><small>Measured at generator AC output</small></label>
+        <label>Calibration factor<input id="gf" type="number" min="1" max="1.5" step=".001"><small>Generator watts ÷ charger DC watts</small></label>
+        <p>Commanded current: <b id="cca">—</b> A</p>
+        <hr>
+        <h3>Calibrate from plug-in meter</h3>
+        <p>While charging steadily, enter the generator meter's live watt reading.</p>
+        <label>Meter reading<input id="mw" type="number" step="1"></label>
+        <button id="calibrate">Calculate calibration</button><p id="cres"></p>
+      </div>
       <label class="check"><input id="en" type="checkbox">Continuously transmit setpoints</label>
       <button id="apply">Apply settings</button><p id="res"></p>
       <details>

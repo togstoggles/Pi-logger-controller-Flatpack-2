@@ -38,7 +38,9 @@ class FlatpackController:
         self.raw = deque(maxlen=100)
         self.rx_count = 0
         self.status_count = 0
+        self.status_candidate_count = 0
         self.last_error = None
+        self.last_status_id = None
         self.state = {
             "online": False,
             "state": "Offline",
@@ -58,6 +60,11 @@ class FlatpackController:
     @staticmethod
     def _format_hex(data):
         return " ".join("%02X" % byte for byte in data)
+
+    @staticmethod
+    def _is_status_frame(can_id, data):
+        # Flatpack status IDs are 0x05AA40SS where AA is PSU address and SS is state.
+        return len(data) == 8 and (can_id & 0xFF00FF00) == 0x05004000
 
     def _db(self):
         path = self.cfg["database_path"]
@@ -163,38 +170,46 @@ class FlatpackController:
         return self.send(0x05009C00, payload)
 
     def decode(self, can_id, data):
-        if can_id != 0x05014004 or len(data) != 8:
+        if not self._is_status_frame(can_id, data):
             return False
 
+        self.status_candidate_count += 1
         now = time.time()
-        current = struct.unpack("<H", data[1:3])[0] / 10.0
-        voltage = struct.unpack("<H", data[3:5])[0] / 100.0
-        input_voltage = struct.unpack("<H", data[5:7])[0]
-        power = voltage * current
-        state_code = can_id & 0xFF
+        try:
+            current = struct.unpack("<H", data[1:3])[0] / 10.0
+            voltage = struct.unpack("<H", data[3:5])[0] / 100.0
+            input_voltage = struct.unpack("<H", data[5:7])[0]
+            power = voltage * current
+            state_code = can_id & 0xFF
 
-        with self.lock:
-            if self.energy_t and self.state["power"] is not None:
-                elapsed = min(max(now - self.energy_t, 0), 5)
-                self.energy_wh += float(self.state["power"]) * elapsed / 3600
-            self.energy_t = now
-            self.last_frame = now
-            self.status_count += 1
-            self.state.update(
-                online=True,
-                state=STATES.get(state_code, "Status 0x%02X" % state_code),
-                state_code=state_code,
-                voltage=round(voltage, 2),
-                current=round(current, 1),
-                power=round(power, 1),
-                input_voltage=input_voltage,
-                temp_inlet=data[0],
-                temp_outlet=data[7],
-                session_kwh=round(self.energy_wh / 1000, 4),
-                last_seen=now,
-                can_id="0x%08X" % can_id,
-            )
-        return True
+            with self.lock:
+                if self.energy_t and self.state["power"] is not None:
+                    elapsed = min(max(now - self.energy_t, 0), 5)
+                    self.energy_wh += float(self.state["power"]) * elapsed / 3600
+                self.energy_t = now
+                self.last_frame = now
+                self.status_count += 1
+                self.last_status_id = "0x%08X" % can_id
+                self.last_error = None
+                self.state.update(
+                    online=True,
+                    state=STATES.get(state_code, "Status 0x%02X" % state_code),
+                    state_code=state_code,
+                    voltage=round(voltage, 2),
+                    current=round(current, 1),
+                    power=round(power, 1),
+                    input_voltage=input_voltage,
+                    temp_inlet=data[0],
+                    temp_outlet=data[7],
+                    session_kwh=round(self.energy_wh / 1000, 4),
+                    last_seen=now,
+                    can_id="0x%08X" % can_id,
+                )
+            return True
+        except Exception as exc:
+            self.last_error = "Status decode failed for 0x%08X: %s" % (can_id, exc)
+            logging.exception(self.last_error)
+            return False
 
     def _start_reader(self):
         if self.reader and self.reader.poll() is None:
@@ -298,7 +313,9 @@ class FlatpackController:
             snapshot["raw_frames"] = list(self.raw)[:25]
             snapshot["diagnostics"] = {
                 "rx_count": self.rx_count,
+                "status_candidate_count": self.status_candidate_count,
                 "status_count": self.status_count,
+                "last_status_id": self.last_status_id,
                 "last_error": self.last_error,
                 "backend": "candump/cansend",
             }

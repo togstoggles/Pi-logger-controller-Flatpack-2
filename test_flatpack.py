@@ -35,7 +35,7 @@ class FlatpackDecoderTests(unittest.TestCase):
         return cls(config_path)
 
     def test_confirmed_status_frame_decodes(self):
-        ctl = self.make_controller()
+        ctl = self.make_controller(RuntimeController)
         data = bytes.fromhex("16 7D 00 D5 14 F8 00 26")
         self.assertTrue(ctl.decode(0x05014004, data))
         snap = ctl.snapshot()
@@ -49,14 +49,35 @@ class FlatpackDecoderTests(unittest.TestCase):
         self.assertEqual(snap["can_id"], "0x05014004")
 
     def test_non_status_frame_is_ignored(self):
-        ctl = self.make_controller()
+        ctl = self.make_controller(RuntimeController)
         self.assertFalse(ctl.decode(0x05002034, bytes.fromhex("1B 11 51 71 10 20 34 4F")))
         self.assertFalse(ctl.snapshot()["online"])
 
-    def test_compatibility_import_has_same_decode_signature(self):
+    def test_setpoint_frame_is_not_mistaken_for_status(self):
         ctl = self.make_controller(RuntimeController)
+        payload = bytes.fromhex("C8 00 E6 14 E6 14 80 16")
+        self.assertFalse(ctl.decode(0x05FF4004, payload))
+        self.assertFalse(ctl.snapshot()["online"])
+
+    def test_implausible_same_id_frame_is_rejected_without_overwriting_good_data(self):
+        ctl = self.make_controller(RuntimeController)
+        good = bytes.fromhex("16 F4 00 2A 15 F9 00 26")
+        bad = bytes.fromhex("5E 01 40 15 40 15 80 16")
+        self.assertTrue(ctl.decode(0x05014004, good))
+        before = ctl.snapshot()
+        self.assertFalse(ctl.decode(0x05014004, bad))
+        after = ctl.snapshot()
+        self.assertEqual(after["voltage"], before["voltage"])
+        self.assertEqual(after["current"], before["current"])
+        self.assertEqual(after["input_voltage"], before["input_voltage"])
+        self.assertEqual(after["diagnostics"]["rejected_status_frames"], 1)
+
+    def test_base_and_runtime_decode_signatures_accept_can_id_and_data(self):
+        base = self.make_controller(FlatpackController)
+        runtime = self.make_controller(RuntimeController)
         data = bytes.fromhex("16 7D 00 D5 14 F8 00 26")
-        self.assertTrue(ctl.decode(0x05014004, data))
+        self.assertTrue(base.decode(0x05014004, data))
+        self.assertTrue(runtime.decode(0x05014004, data))
 
 
 if __name__ == "__main__":

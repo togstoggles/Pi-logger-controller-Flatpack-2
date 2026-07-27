@@ -8,11 +8,13 @@ import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from flatpack import FlatpackController
+from flatpack_runtime import FlatpackController
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ctl = FlatpackController(os.environ.get("FLATPACK_CONFIG", os.path.join(BASE, "config.json")))
-threading.Thread(target=ctl.run, daemon=True).start()
+threading.Thread(target=ctl.run, name="flatpack-can", daemon=True).start()
 app = Flask(__name__)
 
 
@@ -40,7 +42,7 @@ def settings():
             body.get("current_limit"),
             body.get("control_enabled", False),
         )
-        return jsonify(ok=True)
+        return jsonify(ok=True, settings=ctl.snapshot()["settings"])
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)), 400
 
@@ -65,15 +67,8 @@ def export_csv():
     rows = ctl.history(request.args.get("hours", "168"))
     output = io.StringIO()
     keys = [
-        "timestamp",
-        "voltage",
-        "current",
-        "power",
-        "input_voltage",
-        "temp_inlet",
-        "temp_outlet",
-        "state",
-        "online",
+        "timestamp", "voltage", "current", "power", "input_voltage",
+        "temp_inlet", "temp_outlet", "state", "online",
     ]
     writer = csv.DictWriter(output, fieldnames=keys)
     writer.writeheader()
@@ -87,9 +82,13 @@ def export_csv():
 
 @app.route("/health")
 def health():
-    return jsonify(ok=True, can_online=ctl.snapshot()["online"])
+    snap = ctl.snapshot()
+    return jsonify(
+        ok=True,
+        can_online=snap["online"],
+        diagnostics=snap.get("diagnostics", {}),
+    )
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     app.run(host="0.0.0.0", port=5000, threaded=True)

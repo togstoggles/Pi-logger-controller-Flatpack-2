@@ -8,7 +8,7 @@ import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from flatpack_runtime import FlatpackController
+from flatpack import FlatpackController
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 

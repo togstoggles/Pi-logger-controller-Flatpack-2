@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Flatpack Controller</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div><h1>ELTEK FLATPACK</h1><p>CAN monitor, logger and guarded controller</p></div>
+  <div id="status" class="pill off">OFFLINE</div>
+</header>
+<main>
+  <section class="cards">
+    <article><label>OUTPUT VOLTAGE</label><b id="v">—</b><span>V</span></article>
+    <article><label>OUTPUT CURRENT</label><b id="a">—</b><span>A</span></article>
+    <article><label>OUTPUT POWER</label><b id="w">—</b><span>W</span></article>
+    <article><label>SESSION ENERGY</label><b id="kwh">—</b><span>kWh</span></article>
+    <article><label>GENERATOR INPUT</label><b id="vin">—</b><span>V AC</span></article>
+    <article><label>INLET / OUTLET</label><b id="temps">—</b><span>°C</span></article>
+  </section>
+
+  <section class="panel">
+    <div class="head">
+      <div><h2>24-hour history</h2><p id="state">Waiting for telemetry</p></div>
+      <a href="/api/export.csv?hours=168">Export CSV</a>
+    </div>
+    <div class="tabs">
+      <button data-s="voltage" class="active">Voltage</button>
+      <button data-s="current">Current</button>
+      <button data-s="power">Power</button>
+      <button data-s="temp_outlet">Outlet temp</button>
+    </div>
+    <svg id="chart" viewBox="0 0 1000 280" preserveAspectRatio="none">
+      <g id="grid"></g><polyline id="line"/><text id="mn" x="8" y="268"/><text id="mx" x="8" y="18"/>
+    </svg>
+  </section>
+
+  <section class="cols">
+    <article class="panel">
+      <h2>Guarded control</h2>
+      <div class="warning">Disabled by default. Keep battery/BMS protection independent.</div>
+      <label>Target voltage<input id="tv" type="number" step=".1"><small id="vl"></small></label>
+      <label>Current limit<input id="ci" type="number" step=".5"><small id="cl"></small></label>
+      <label class="check"><input id="en" type="checkbox">Continuously transmit setpoints</label>
+      <button id="apply">Apply settings</button><p id="res"></p>
+      <details>
+        <summary>Write persistent default voltage</summary>
+        <p>This applies when CAN control times out.</p>
+        <label>Default voltage<input id="dv" type="number" step=".1"></label>
+        <label>Type <code>WRITE DEFAULT</code><input id="confirm"></label>
+        <button class="danger" id="write">Write persistent default</button><p id="dres"></p>
+      </details>
+    </article>
+
+    <article class="panel">
+      <h2>CAN activity</h2>
+      <div class="meta">
+        <span>State</span><b id="mode">—</b>
+        <span>Last frame</span><b id="seen">—</b>
+        <span>Status ID</span><b id="cid">—</b>
+      </div>
+      <div class="raw"><table><thead><tr><th>Time</th><th>ID</th><th>Data</th></tr></thead><tbody id="frames"></tbody></table></div>
+    </article>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

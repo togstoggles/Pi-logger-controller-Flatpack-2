@@ -55,6 +55,10 @@ class FlatpackController:
         }
         self._init_db()
 
+    @staticmethod
+    def _format_hex(data):
+        return " ".join("%02X" % byte for byte in data)
+
     def _db(self):
         path = self.cfg["database_path"]
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -233,7 +237,7 @@ class FlatpackController:
                     self.raw.appendleft({
                         "timestamp": round(time.time(), 3),
                         "id": "0x%08X" % can_id,
-                        "data": data.hex(" ").upper(),
+                        "data": self._format_hex(data),
                         "dlc": len(data),
                     })
 

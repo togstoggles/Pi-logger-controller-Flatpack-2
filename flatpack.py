@@ -41,6 +41,7 @@ class FlatpackController:
         self.status_candidate_count = 0
         self.last_error = None
         self.last_status_id = None
+        self.last_rx_id = None
         self.state = {
             "online": False,
             "state": "Offline",
@@ -63,8 +64,13 @@ class FlatpackController:
 
     @staticmethod
     def _is_status_frame(can_id, data):
-        # Flatpack status IDs are 0x05AA40SS where AA is PSU address and SS is state.
-        return len(data) == 8 and (can_id & 0xFF00FF00) == 0x05004000
+        if len(data) != 8:
+            return False
+        normalized = can_id & 0x1FFFFFFF
+        if normalized == 0x05014004:
+            return True
+        # General Flatpack form: 0x05 AA 40 SS.
+        return ((normalized >> 24) & 0xFF) == 0x05 and ((normalized >> 8) & 0xFF) == 0x40
 
     def _db(self):
         path = self.cfg["database_path"]
@@ -170,7 +176,8 @@ class FlatpackController:
         return self.send(0x05009C00, payload)
 
     def decode(self, can_id, data):
-        if not self._is_status_frame(can_id, data):
+        normalized = can_id & 0x1FFFFFFF
+        if not self._is_status_frame(normalized, data):
             return False
 
         self.status_candidate_count += 1
@@ -180,16 +187,16 @@ class FlatpackController:
             voltage = struct.unpack("<H", data[3:5])[0] / 100.0
             input_voltage = struct.unpack("<H", data[5:7])[0]
             power = voltage * current
-            state_code = can_id & 0xFF
+            state_code = normalized & 0xFF
 
             with self.lock:
                 if self.energy_t and self.state["power"] is not None:
-                    elapsed = min(max(now - self.energy_t, 0), 5)
+                    elapsed = min(max(now - self.energy_t, 0), 10)
                     self.energy_wh += float(self.state["power"]) * elapsed / 3600
                 self.energy_t = now
                 self.last_frame = now
                 self.status_count += 1
-                self.last_status_id = "0x%08X" % can_id
+                self.last_status_id = "0x%08X" % normalized
                 self.last_error = None
                 self.state.update(
                     online=True,
@@ -199,15 +206,15 @@ class FlatpackController:
                     current=round(current, 1),
                     power=round(power, 1),
                     input_voltage=input_voltage,
-                    temp_inlet=data[0],
-                    temp_outlet=data[7],
+                    temp_inlet=int(data[0]),
+                    temp_outlet=int(data[7]),
                     session_kwh=round(self.energy_wh / 1000, 4),
                     last_seen=now,
-                    can_id="0x%08X" % can_id,
+                    can_id="0x%08X" % normalized,
                 )
             return True
         except Exception as exc:
-            self.last_error = "Status decode failed for 0x%08X: %s" % (can_id, exc)
+            self.last_error = "Status decode failed for 0x%08X: %s" % (normalized, exc)
             logging.exception(self.last_error)
             return False
 
@@ -241,12 +248,13 @@ class FlatpackController:
                 if not match:
                     continue
 
-                can_id = int(match.group("id"), 16)
+                can_id = int(match.group("id"), 16) & 0x1FFFFFFF
                 data_hex = match.group("data")
                 if len(data_hex) % 2:
                     continue
                 data = bytes.fromhex(data_hex)
                 self.rx_count += 1
+                self.last_rx_id = "0x%08X" % can_id
 
                 with self.lock:
                     self.raw.appendleft({
@@ -256,7 +264,9 @@ class FlatpackController:
                         "dlc": len(data),
                     })
 
-                self.decode(can_id, data)
+                # Decode immediately from the same parsed values shown in CAN activity.
+                if can_id == 0x05014004 or self._is_status_frame(can_id, data):
+                    self.decode(can_id, data)
             except Exception as exc:
                 self.last_error = "CAN reader error: %s" % exc
                 logging.exception(self.last_error)
@@ -298,7 +308,8 @@ class FlatpackController:
 
     def snapshot(self):
         with self.lock:
-            if self.last_frame and time.time() - self.last_frame > float(self.cfg["offline_after_seconds"]):
+            timeout = max(float(self.cfg.get("offline_after_seconds", 8)), 15.0)
+            if self.last_frame and time.time() - self.last_frame > timeout:
                 self.state["online"] = False
                 self.state["state"] = "Offline"
             snapshot = dict(self.state)
@@ -315,6 +326,7 @@ class FlatpackController:
                 "rx_count": self.rx_count,
                 "status_candidate_count": self.status_candidate_count,
                 "status_count": self.status_count,
+                "last_rx_id": self.last_rx_id,
                 "last_status_id": self.last_status_id,
                 "last_error": self.last_error,
                 "backend": "candump/cansend",

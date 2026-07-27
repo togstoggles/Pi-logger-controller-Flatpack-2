@@ -4,12 +4,17 @@ let loaded = false;
 const $ = id => document.getElementById(id);
 const f = (value, digits = 1) => value == null ? "—" : Number(value).toFixed(digits);
 
+function updateControlVisibility() {
+  $("power-controls").style.display = $("cm").value === "constant_power" ? "block" : "none";
+}
+
 async function live() {
   try {
     const data = await (await fetch("/api/live", {cache: "no-store"})).json();
     $("v").textContent = f(data.voltage, 2);
     $("a").textContent = f(data.current);
     $("w").textContent = f(data.power, 0);
+    $("gw").textContent = f(data.estimated_generator_power, 0);
     $("kwh").textContent = f(data.session_kwh, 3);
     $("vin").textContent = f(data.input_voltage, 0);
     $("temps").textContent = data.temp_inlet == null ? "—" : data.temp_inlet + " / " + data.temp_outlet;
@@ -19,15 +24,20 @@ async function live() {
     $("seen").textContent = data.last_seen ? new Date(data.last_seen * 1000).toLocaleTimeString() : "—";
     $("status").textContent = data.online ? "ONLINE" : "OFFLINE";
     $("status").className = "pill " + (data.online ? "on" : "off");
+    $("cca").textContent = f(data.commanded_current);
 
     if (!loaded) {
       const settings = data.settings;
       $("tv").value = settings.target_voltage;
       $("ci").value = settings.current_limit;
+      $("cm").value = settings.control_mode || "manual";
+      $("gp").value = settings.generator_power_target;
+      $("gf").value = settings.generator_calibration_factor;
       $("en").checked = settings.control_enabled;
       $("dv").value = settings.target_voltage;
       $("vl").textContent = settings.min_voltage + "–" + settings.max_voltage + " V";
       $("cl").textContent = settings.min_current + "–" + settings.max_current + " A";
+      updateControlVisibility();
       loaded = true;
     }
 
@@ -83,6 +93,8 @@ document.querySelectorAll(".tabs button").forEach(button => {
   };
 });
 
+$("cm").onchange = updateControlVisibility;
+
 $("apply").onclick = async () => {
   const result = await (await fetch("/api/settings", {
     method: "POST",
@@ -90,10 +102,27 @@ $("apply").onclick = async () => {
     body: JSON.stringify({
       target_voltage: Number($("tv").value),
       current_limit: Number($("ci").value),
-      control_enabled: $("en").checked
+      control_enabled: $("en").checked,
+      control_mode: $("cm").value,
+      generator_power_target: Number($("gp").value),
+      generator_calibration_factor: Number($("gf").value)
     })
   })).json();
   $("res").textContent = result.ok ? "Settings applied." : "Blocked: " + result.error;
+};
+
+$("calibrate").onclick = async () => {
+  const result = await (await fetch("/api/calibrate-generator", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({meter_watts: Number($("mw").value)})
+  })).json();
+  if (result.ok) {
+    $("gf").value = result.calibration_factor;
+    $("cres").textContent = "Calibration saved: " + Number(result.calibration_factor).toFixed(3);
+  } else {
+    $("cres").textContent = "Blocked: " + result.error;
+  }
 };
 
 $("write").onclick = async () => {

@@ -4,7 +4,7 @@
   "psu_id": 1,
   "login_interval_seconds": 5,
   "sample_interval_seconds": 10,
-  "offline_after_seconds": 3,
+  "offline_after_seconds": 8,
   "control_enabled": false,
   "target_voltage": 53.5,
   "current_limit": 20.0,

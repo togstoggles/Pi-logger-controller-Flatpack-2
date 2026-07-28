@@ -25,6 +25,11 @@ class FlatpackController:
         self.path = path
         with open(path, "r") as handle:
             self.cfg = json.load(handle)
+        self.cfg.setdefault("control_mode", "manual")
+        self.cfg.setdefault("generator_power_target", 1700.0)
+        self.cfg.setdefault("generator_calibration_factor", 1.12)
+        self.cfg.setdefault("control_interval_seconds", 2.0)
+        self.cfg.setdefault("current_slew_limit", 1.5)
 
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
@@ -42,6 +47,7 @@ class FlatpackController:
         self.last_error = None
         self.last_status_id = None
         self.last_rx_id = None
+        self.commanded_current = float(self.cfg.get("current_limit", 20.0))
         self.state = {
             "online": False,
             "state": "Offline",
@@ -69,7 +75,6 @@ class FlatpackController:
         normalized = can_id & 0x1FFFFFFF
         if normalized == 0x05014004:
             return True
-        # General Flatpack form: 0x05 AA 40 SS.
         return ((normalized >> 24) & 0xFF) == 0x05 and ((normalized >> 8) & 0xFF) == 0x40
 
     def _db(self):
@@ -137,11 +142,34 @@ class FlatpackController:
         if float(self.cfg["ovp_voltage"]) <= voltage:
             raise ValueError("OVP must exceed target voltage")
 
+    def _desired_current(self):
+        mode = self.cfg.get("control_mode", "manual")
+        if mode == "manual":
+            return float(self.cfg["current_limit"])
+        if mode != "constant_power":
+            raise ValueError("Unknown control mode")
+        voltage = self.state.get("voltage") or float(self.cfg["target_voltage"])
+        factor = float(self.cfg.get("generator_calibration_factor", 1.12))
+        if factor < 1.0 or factor > 2.0:
+            raise ValueError("Calibration factor outside 1.00-2.00")
+        dc_target = float(self.cfg["generator_power_target"]) / factor
+        desired = dc_target / max(float(voltage), 1.0)
+        return max(float(self.cfg["min_current"]), min(float(self.cfg["max_current"]), desired))
+
     def setpoints(self):
         if not self.cfg["control_enabled"]:
             return False
         voltage = float(self.cfg["target_voltage"])
-        current = float(self.cfg["current_limit"])
+        desired = self._desired_current()
+        slew = max(0.1, float(self.cfg.get("current_slew_limit", 1.5)))
+        delta = desired - self.commanded_current
+        if delta > slew:
+            current = self.commanded_current + slew
+        elif delta < -slew:
+            current = self.commanded_current - slew
+        else:
+            current = desired
+        current = max(float(self.cfg["min_current"]), min(float(self.cfg["max_current"]), current))
         self.validate(voltage, current)
         payload = struct.pack(
             "<HHHH",
@@ -150,23 +178,54 @@ class FlatpackController:
             round(voltage * 100),
             round(float(self.cfg["ovp_voltage"]) * 100),
         )
-        return self.send(0x05FF4004, payload)
+        sent = self.send(0x05FF4004, payload)
+        if sent:
+            self.commanded_current = current
+        return sent
 
-    def update_settings(self, voltage, current, enabled):
+    def update_settings(self, voltage, current, enabled, mode="manual", generator_power=1700.0, calibration_factor=1.12):
         voltage = float(voltage)
         current = float(current)
+        generator_power = float(generator_power)
+        calibration_factor = float(calibration_factor)
+        if mode not in ("manual", "constant_power"):
+            raise ValueError("Invalid control mode")
+        if not 100.0 <= generator_power <= 3000.0:
+            raise ValueError("Generator power target outside 100-3000 W")
+        if not 1.0 <= calibration_factor <= 2.0:
+            raise ValueError("Calibration factor outside 1.00-2.00")
         self.validate(voltage, current)
         with self.lock:
             self.cfg.update(
                 target_voltage=voltage,
                 current_limit=current,
                 control_enabled=bool(enabled),
+                control_mode=mode,
+                generator_power_target=generator_power,
+                generator_calibration_factor=calibration_factor,
             )
+            if mode == "manual":
+                self.commanded_current = current
             self.save()
         if enabled:
             self.login()
             time.sleep(0.1)
             self.setpoints()
+
+    def calibrate_generator(self, meter_watts):
+        meter_watts = float(meter_watts)
+        dc_watts = float(self.state.get("power") or 0.0)
+        if meter_watts < 100.0 or meter_watts > 4000.0:
+            raise ValueError("Meter reading outside 100-4000 W")
+        if dc_watts < 100.0:
+            raise ValueError("Live charger output is too low to calibrate")
+        factor = meter_watts / dc_watts
+        if not 1.0 <= factor <= 2.0:
+            raise ValueError("Calculated factor outside 1.00-2.00; wait for a stable reading")
+        with self.lock:
+            self.cfg["generator_calibration_factor"] = round(factor, 4)
+            self.save()
+        return self.cfg["generator_calibration_factor"]
 
     def default_voltage(self, voltage):
         voltage = float(voltage)
@@ -179,7 +238,6 @@ class FlatpackController:
         normalized = can_id & 0x1FFFFFFF
         if not self._is_status_frame(normalized, data):
             return False
-
         self.status_candidate_count += 1
         now = time.time()
         try:
@@ -188,7 +246,6 @@ class FlatpackController:
             input_voltage = struct.unpack("<H", data[5:7])[0]
             power = voltage * current
             state_code = normalized & 0xFF
-
             with self.lock:
                 if self.energy_t and self.state["power"] is not None:
                     elapsed = min(max(now - self.energy_t, 0), 10)
@@ -242,12 +299,10 @@ class FlatpackController:
                     time.sleep(1)
                     self.reader = None
                     continue
-
                 line = line.strip()
                 match = CANDUMP_RE.match(line)
                 if not match:
                     continue
-
                 can_id = int(match.group("id"), 16) & 0x1FFFFFFF
                 data_hex = match.group("data")
                 if len(data_hex) % 2:
@@ -255,7 +310,6 @@ class FlatpackController:
                 data = bytes.fromhex(data_hex)
                 self.rx_count += 1
                 self.last_rx_id = "0x%08X" % can_id
-
                 with self.lock:
                     self.raw.appendleft({
                         "timestamp": round(time.time(), 3),
@@ -263,8 +317,6 @@ class FlatpackController:
                         "data": self._format_hex(data),
                         "dlc": len(data),
                     })
-
-                # Decode immediately from the same parsed values shown in CAN activity.
                 if can_id == 0x05014004 or self._is_status_frame(can_id, data):
                     self.decode(can_id, data)
             except Exception as exc:
@@ -284,11 +336,9 @@ class FlatpackController:
         conn = self._db()
         conn.execute(
             "INSERT INTO samples VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                time.time(), state["voltage"], state["current"], state["power"],
-                state["input_voltage"], state["temp_inlet"], state["temp_outlet"],
-                state["state"], int(state["online"]),
-            ),
+            (time.time(), state["voltage"], state["current"], state["power"],
+             state["input_voltage"], state["temp_inlet"], state["temp_outlet"],
+             state["state"], int(state["online"])),
         )
         conn.commit()
         conn.close()
@@ -300,10 +350,8 @@ class FlatpackController:
             "SELECT * FROM samples WHERE timestamp>=? ORDER BY timestamp", (cutoff,)
         ).fetchall()
         conn.close()
-        keys = [
-            "timestamp", "voltage", "current", "power", "input_voltage",
-            "temp_inlet", "temp_outlet", "state", "online",
-        ]
+        keys = ["timestamp", "voltage", "current", "power", "input_voltage",
+                "temp_inlet", "temp_outlet", "state", "online"]
         return [dict(zip(keys, row)) for row in rows]
 
     def snapshot(self):
@@ -313,12 +361,15 @@ class FlatpackController:
                 self.state["online"] = False
                 self.state["state"] = "Offline"
             snapshot = dict(self.state)
+            factor = float(self.cfg.get("generator_calibration_factor", 1.12))
+            snapshot["commanded_current"] = round(self.commanded_current, 1)
+            snapshot["estimated_generator_power"] = round(float(self.state.get("power") or 0.0) * factor)
             snapshot["settings"] = {
                 key: self.cfg[key]
                 for key in [
-                    "control_enabled", "target_voltage", "current_limit",
-                    "min_voltage", "max_voltage", "min_current", "max_current",
-                    "ovp_voltage",
+                    "control_enabled", "control_mode", "target_voltage", "current_limit",
+                    "generator_power_target", "generator_calibration_factor",
+                    "min_voltage", "max_voltage", "min_current", "max_current", "ovp_voltage",
                 ]
             }
             snapshot["raw_frames"] = list(self.raw)[:25]
@@ -340,16 +391,14 @@ class FlatpackController:
             if now - self.last_login >= float(self.cfg["login_interval_seconds"]):
                 self.login()
                 self.last_login = now
-
-            if self.cfg["control_enabled"] and now - self.last_control >= 2:
+            interval = float(self.cfg.get("control_interval_seconds", 2.0))
+            if self.cfg["control_enabled"] and now - self.last_control >= interval:
                 try:
                     self.setpoints()
                 except Exception as exc:
                     logging.error("Control blocked: %s", exc)
                 self.last_control = now
-
             if now - self.last_sample >= float(self.cfg["sample_interval_seconds"]):
                 self.sample()
                 self.last_sample = now
-
             self.stop_event.wait(0.25)

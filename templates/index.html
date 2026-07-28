@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Flatpack Controller</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=generator-power-2">
 </head>
 <body>
 <header>
@@ -17,6 +17,7 @@
     <article><label>OUTPUT CURRENT</label><b id="a">—</b><span>A</span></article>
     <article><label>OUTPUT POWER</label><b id="w">—</b><span>W</span></article>
     <article><label>EST. GENERATOR LOAD</label><b id="gw">—</b><span>W</span></article>
+    <article><label>COMMAND CURRENT</label><b id="cca">—</b><span>A</span></article>
     <article><label>SESSION ENERGY</label><b id="kwh">—</b><span>kWh</span></article>
     <article><label>GENERATOR INPUT</label><b id="vin">—</b><span>V AC</span></article>
     <article><label>INLET / OUTLET</label><b id="temps">—</b><span>°C</span></article>
@@ -51,13 +52,12 @@
       <label>Target voltage<input id="tv" type="number" step=".1"><small id="vl"></small></label>
       <label>Manual current limit<input id="ci" type="number" step=".5"><small id="cl"></small></label>
       <div id="power-controls">
-        <label>Generator power target<input id="gp" type="number" step="10"><small>Measured at generator AC output</small></label>
-        <label>Calibration factor<input id="gf" type="number" min="1" max="1.5" step=".001"><small>Generator watts ÷ charger DC watts</small></label>
-        <p>Commanded current: <b id="cca">—</b> A</p>
+        <label>Generator power target<input id="gp" type="number" min="100" max="3000" step="10"><small>Desired AC load shown by your generator meter</small></label>
+        <label>Calibration factor<input id="gf" type="number" min="1" max="2" step=".001"><small>Generator AC watts ÷ charger DC watts</small></label>
         <hr>
         <h3>Calibrate from plug-in meter</h3>
-        <p>While charging steadily, enter the generator meter's live watt reading.</p>
-        <label>Meter reading<input id="mw" type="number" step="1"></label>
+        <p>Wait for charging to stabilise, enter the generator meter reading, then calculate.</p>
+        <label>Meter reading<input id="mw" type="number" min="100" max="4000" step="1"></label>
         <button id="calibrate">Calculate calibration</button><p id="cres"></p>
       </div>
       <label class="check"><input id="en" type="checkbox">Continuously transmit setpoints</label>
@@ -82,6 +82,6 @@
     </article>
   </section>
 </main>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=generator-power-2"></script>
 </body>
 </html>

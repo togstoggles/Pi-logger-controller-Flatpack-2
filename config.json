@@ -11,6 +11,8 @@
   "current_limit": 37.0,
   "generator_power_target": 1700.0,
   "generator_calibration_factor": 1.10,
+  "control_interval_seconds": 2.0,
+  "current_slew_limit": 1.5,
   "min_voltage": 44.5,
   "max_voltage": 55.6,
   "min_current": 1.0,

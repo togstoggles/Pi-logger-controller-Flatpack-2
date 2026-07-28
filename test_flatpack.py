@@ -21,12 +21,15 @@ class FlatpackDecoderTests(unittest.TestCase):
             "sample_interval_seconds": 10,
             "offline_after_seconds": 15,
             "control_enabled": False,
+            "control_mode": "manual",
             "target_voltage": 53.5,
             "current_limit": 20.0,
+            "generator_power_target": 1700.0,
+            "generator_calibration_factor": 1.10,
             "min_voltage": 44.5,
-            "max_voltage": 54.4,
+            "max_voltage": 55.6,
             "min_current": 1.0,
-            "max_current": 35.0,
+            "max_current": 38.0,
             "ovp_voltage": 57.6,
             "database_path": os.path.join(temp_dir.name, "flatpack.db"),
         }
@@ -78,6 +81,20 @@ class FlatpackDecoderTests(unittest.TestCase):
         data = bytes.fromhex("16 7D 00 D5 14 F8 00 26")
         self.assertTrue(base.decode(0x05014004, data))
         self.assertTrue(runtime.decode(0x05014004, data))
+
+    def test_constant_power_current_uses_live_voltage_and_calibration(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.cfg["control_mode"] = "constant_power"
+        ctl.state["voltage"] = 55.0
+        current = ctl._control_current()
+        self.assertAlmostEqual(current, (1700.0 / 1.10) / 55.0, places=3)
+
+    def test_calibration_uses_meter_watts_over_dc_watts(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.state["power"] = 1500.0
+        factor = ctl.calibrate_generator(1700.0)
+        self.assertAlmostEqual(factor, 1.1333, places=4)
+        self.assertEqual(ctl.cfg["generator_calibration_factor"], factor)
 
 
 if __name__ == "__main__":

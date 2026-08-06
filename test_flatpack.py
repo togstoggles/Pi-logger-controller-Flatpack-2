@@ -51,9 +51,39 @@ class FlatpackDecoderTests(unittest.TestCase):
         self.assertAlmostEqual(snap["power"], 666.6, places=1)
         self.assertEqual(snap["can_id"], "0x05014004")
 
+    def test_all_operating_state_ids_decode(self):
+        expected = {
+            0x05014004: "Constant voltage",
+            0x05014008: "Constant current",
+            0x0501400C: "Alarm",
+            0x05014010: "Walk-in",
+        }
+        data = bytes.fromhex("16 7D 00 D5 14 F8 00 26")
+        for can_id, state in expected.items():
+            ctl = self.make_controller(RuntimeController)
+            self.assertTrue(ctl.decode(can_id, data), hex(can_id))
+            self.assertEqual(ctl.snapshot()["state"], state)
+
+    def test_alarm_frame_with_zero_ac_input_is_valid(self):
+        ctl = self.make_controller(RuntimeController)
+        data = bytes.fromhex("16 00 00 18 15 00 00 26")
+        self.assertTrue(ctl.decode(0x0501400C, data))
+        snap = ctl.snapshot()
+        self.assertTrue(snap["online"])
+        self.assertEqual(snap["state"], "Alarm")
+        self.assertEqual(snap["voltage"], 54.0)
+        self.assertEqual(snap["current"], 0.0)
+        self.assertEqual(snap["input_voltage"], 0)
+
     def test_non_status_frame_is_ignored(self):
         ctl = self.make_controller(RuntimeController)
         self.assertFalse(ctl.decode(0x05002034, bytes.fromhex("1B 11 51 71 10 20 34 4F")))
+        self.assertFalse(ctl.snapshot()["online"])
+
+    def test_similar_but_unrelated_status_id_is_ignored(self):
+        ctl = self.make_controller(RuntimeController)
+        data = bytes.fromhex("16 7D 00 D5 14 F8 00 26")
+        self.assertFalse(ctl.decode(0x05024004, data))
         self.assertFalse(ctl.snapshot()["online"])
 
     def test_setpoint_frame_is_not_mistaken_for_status(self):

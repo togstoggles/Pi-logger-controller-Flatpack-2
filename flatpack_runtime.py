@@ -8,9 +8,16 @@ from flatpack import FlatpackController as BaseController, STATES
 
 
 class FlatpackController(BaseController):
-    """Accept the confirmed status frame and provide guarded adaptive control."""
+    """Decode guarded Flatpack status frames and provide adaptive control."""
 
-    STATUS_ID = 0x05014004
+    # The low byte is the operating-state code, not a fixed PSU address:
+    # 0x04 constant voltage, 0x08 constant current, 0x0C alarm, 0x10 walk-in.
+    STATUS_IDS = frozenset((
+        0x05014004,
+        0x05014008,
+        0x0501400C,
+        0x05014010,
+    ))
 
     def __init__(self, path):
         super().__init__(path)
@@ -33,7 +40,7 @@ class FlatpackController(BaseController):
                        voltage < 35 OR voltage > 65 OR
                        current < 0 OR current > 100 OR
                        power < 0 OR power > 6500 OR
-                       input_voltage < 80 OR input_voltage > 300 OR
+                       input_voltage < 0 OR input_voltage > 300 OR
                        temp_inlet < 0 OR temp_inlet > 120 OR
                        temp_outlet < 0 OR temp_outlet > 120
                    )"""
@@ -44,10 +51,12 @@ class FlatpackController(BaseController):
 
     @staticmethod
     def _plausible(voltage, current, input_voltage, temp_inlet, temp_outlet):
+        # AC input may legitimately be zero while the rectifier remains powered
+        # from the battery/CAN side and reports the Alarm operating state.
         return (
             35.0 <= voltage <= 65.0 and
             0.0 <= current <= 100.0 and
-            80 <= input_voltage <= 300 and
+            0 <= input_voltage <= 300 and
             0 <= temp_inlet <= 120 and
             0 <= temp_outlet <= 120
         )
@@ -138,9 +147,10 @@ class FlatpackController(BaseController):
         self.last_raw_frame = time.time()
         normalized = int(can_id) & 0x1FFFFFFF
         payload = bytes(data)
-        if normalized != self.STATUS_ID or len(payload) != 8:
+        if normalized not in self.STATUS_IDS or len(payload) != 8:
             return False
 
+        self.status_candidate_count += 1
         current = struct.unpack_from("<H", payload, 1)[0] / 10.0
         voltage = struct.unpack_from("<H", payload, 3)[0] / 100.0
         input_voltage = struct.unpack_from("<H", payload, 5)[0]
@@ -183,6 +193,7 @@ class FlatpackController(BaseController):
     def snapshot(self):
         snapshot = super().snapshot()
         factor = float(self.cfg.get("generator_calibration_factor", 1.10))
+        expected_ids = ["0x%08X" % can_id for can_id in sorted(self.STATUS_IDS)]
         snapshot["estimated_generator_power"] = round(float(snapshot.get("power") or 0.0) * factor, 0)
         snapshot["commanded_current"] = None if self.last_commanded_current is None else round(self.last_commanded_current, 1)
         snapshot["settings"].update({
@@ -195,7 +206,8 @@ class FlatpackController(BaseController):
             "status_frames_received": self.status_frames_received,
             "rejected_status_frames": self.rejected_status_frames,
             "last_raw_frame": self.last_raw_frame or None,
-            "expected_status_id": "0x%08X" % self.STATUS_ID,
-            "decoder": "exact-id-plus-plausibility-filter",
+            "expected_status_id": " | ".join(expected_ids),
+            "expected_status_ids": expected_ids,
+            "decoder": "flatpack-state-id-plus-plausibility-filter",
         })
         return snapshot

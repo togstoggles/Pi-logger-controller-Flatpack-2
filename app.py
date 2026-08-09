@@ -14,7 +14,47 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ctl = FlatpackController(os.environ.get("FLATPACK_CONFIG", os.path.join(BASE, "config.json")))
+APP_STARTED = time.time()
+
+
+def controller_watchdog():
+    """Restart the process if the background CAN/control loop ever stalls.
+
+    The Flask server can remain responsive even if its controller thread dies,
+    so systemd alone cannot detect that failure. This watchdog deliberately
+    exits the whole process on a stale controller heartbeat; systemd then
+    restarts it and CAN command transmission resumes automatically.
+    """
+    while True:
+        time.sleep(5)
+        now = time.time()
+        if now - APP_STARTED < 30:
+            continue
+
+        login_interval = max(1.0, float(ctl.cfg.get("login_interval_seconds", 5.0)))
+        login_stale_after = max(30.0, login_interval * 6.0)
+        last_login = float(getattr(ctl, "last_login", 0.0) or 0.0)
+        if not last_login or now - last_login > login_stale_after:
+            logging.critical(
+                "Controller watchdog: login/control loop stale for %.1f s; forcing systemd restart",
+                now - last_login if last_login else now - APP_STARTED,
+            )
+            os._exit(70)
+
+        if ctl.cfg.get("control_enabled"):
+            control_interval = max(0.5, float(ctl.cfg.get("control_interval_seconds", 2.0)))
+            control_stale_after = max(15.0, control_interval * 6.0)
+            last_control = float(getattr(ctl, "last_control", 0.0) or 0.0)
+            if not last_control or now - last_control > control_stale_after:
+                logging.critical(
+                    "Controller watchdog: setpoint loop stale for %.1f s while armed; forcing restart",
+                    now - last_control if last_control else now - APP_STARTED,
+                )
+                os._exit(71)
+
+
 threading.Thread(target=ctl.run, name="flatpack-can", daemon=True).start()
+threading.Thread(target=controller_watchdog, name="flatpack-watchdog", daemon=True).start()
 app = Flask(__name__)
 
 
@@ -96,10 +136,18 @@ def export_csv():
 @app.route("/health")
 def health():
     snap = ctl.snapshot()
+    now = time.time()
+    diagnostics = snap.get("diagnostics", {})
+    diagnostics.update({
+        "app_uptime_seconds": round(now - APP_STARTED, 1),
+        "last_login_age_seconds": None if not ctl.last_login else round(now - ctl.last_login, 1),
+        "last_control_age_seconds": None if not ctl.last_control else round(now - ctl.last_control, 1),
+        "watchdog": "armed",
+    })
     return jsonify(
         ok=True,
         can_online=snap["online"],
-        diagnostics=snap.get("diagnostics", {}),
+        diagnostics=diagnostics,
     )
 
 

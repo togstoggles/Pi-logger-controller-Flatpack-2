@@ -47,8 +47,6 @@ CAN_USB_VIDPID=""
 CAN_USB_SERIAL=""
 
 if [ -r "$ENV_FILE" ]; then
-  # Preserve an existing v2 pin, even when the CANable is temporarily unplugged.
-  # shellcheck disable=SC1090
   . "$ENV_FILE"
   if [ -n "${CAN_DEVICE:-}" ] && [ "${CAN_DEVICE}" != "auto" ]; then
     PINNED_DEVICE="$CAN_DEVICE"
@@ -85,7 +83,27 @@ fi
 
 apt-get update
 apt-get install -y can-utils python3-venv unzip udev
-mkdir -p "$DST/data" /etc/default
+mkdir -p "$DST/data" /etc/default /etc/udev/rules.d
+
+# Dedicated charger appliance: never permit system suspend/hibernate.
+# Display blanking is harmless; these masks keep CPU, CAN and control services alive.
+systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1 || true
+
+# Keep this CANable out of USB autosuspend. This is deliberately scoped to the
+# detected adapter rather than disabling USB power management for the whole Pi.
+if [ -n "$CAN_USB_VIDPID" ]; then
+  VID="${CAN_USB_VIDPID%%:*}"
+  PID="${CAN_USB_VIDPID##*:}"
+  if [ -n "$CAN_USB_SERIAL" ]; then
+    printf 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", ATTR{serial}=="%s", TEST=="power/control", ATTR{power/control}="on"\n' \
+      "$VID" "$PID" "$CAN_USB_SERIAL" > /etc/udev/rules.d/99-flatpack-canable-power.rules
+  else
+    printf 'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="%s", ATTR{idProduct}=="%s", TEST=="power/control", ATTR{power/control}="on"\n' \
+      "$VID" "$PID" > /etc/udev/rules.d/99-flatpack-canable-power.rules
+  fi
+  udevadm control --reload-rules || true
+  udevadm trigger --subsystem-match=usb --action=add || true
+fi
 
 # Preserve live settings and meter calibration across software updates.
 SAVED_CONFIG="$(mktemp)"
@@ -159,16 +177,17 @@ cat >/etc/systemd/system/flatpack-dashboard.service <<EOF_SERVICE
 Description=Eltek Flatpack Controller v2 Dashboard
 After=network.target flatpack-can.service
 Wants=flatpack-can.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=$U
 WorkingDirectory=$DST
 Environment=PYTHONUNBUFFERED=1
-Environment=FLATPACK_VERSION=2.0.0
+Environment=FLATPACK_VERSION=2.1.0
 ExecStart=$DST/.venv/bin/python $DST/app.py
 Restart=always
-RestartSec=3
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
@@ -182,7 +201,10 @@ sleep 2
 
 IP="$(hostname -I | awk '{print $1}')"
 echo
-echo "Flatpack Controller v2 installed"
+echo "Flatpack Controller v2.1 installed"
+echo "System sleep/hibernate: MASKED"
+echo "CANable USB autosuspend: DISABLED for ${CAN_USB_VIDPID:-detected device}"
+echo "Controller watchdog: ARMED"
 echo "Pinned CANable: ${PINNED_DEVICE:-automatic discovery}"
 echo "Dashboard: http://${IP:-raspberrypi}:5000"
 echo "Health:    http://${IP:-raspberrypi}:5000/health"

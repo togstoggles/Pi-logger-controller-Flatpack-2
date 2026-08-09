@@ -1,5 +1,6 @@
 let hist = [];
 let series = "voltage";
+let historyHours = 5;
 let loaded = false;
 const $ = id => document.getElementById(id);
 const f = (value, digits = 1) => value == null ? "—" : Number(value).toFixed(digits);
@@ -122,7 +123,8 @@ async function live() {
 }
 
 async function history() {
-  hist = await (await fetch("/api/history?hours=24", {cache: "no-store"})).json();
+  hist = await (await fetch("/api/history?hours=" + historyHours, {cache: "no-store"})).json();
+  $("history-title").textContent = historyHours + "-hour history";
   draw();
 }
 
@@ -155,12 +157,21 @@ function draw() {
   $("mx").textContent = max.toFixed(1);
 }
 
-document.querySelectorAll(".tabs button").forEach(button => {
+document.querySelectorAll(".series-tabs button").forEach(button => {
   button.onclick = () => {
-    document.querySelectorAll(".tabs button").forEach(item => item.classList.remove("active"));
+    document.querySelectorAll(".series-tabs button").forEach(item => item.classList.remove("active"));
     button.classList.add("active");
     series = button.dataset.s;
     draw();
+  };
+});
+
+document.querySelectorAll(".range-tabs button").forEach(button => {
+  button.onclick = async () => {
+    document.querySelectorAll(".range-tabs button").forEach(item => item.classList.remove("active"));
+    button.classList.add("active");
+    historyHours = Number(button.dataset.hours) || 5;
+    await history();
   };
 });
 

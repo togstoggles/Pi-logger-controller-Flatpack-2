@@ -8,6 +8,33 @@ function updateControlVisibility() {
   $("power-controls").style.display = $("cm").value === "constant_power" ? "block" : "none";
 }
 
+function updateAwakeStatus(status) {
+  const awake = $("awake");
+  if (!status) {
+    awake.textContent = "AWAKE UNKNOWN";
+    awake.className = "pill warn";
+    awake.title = "No keep-awake status received from Pi";
+    return;
+  }
+
+  if (status.ok) {
+    awake.textContent = "KEEP AWAKE ✓";
+    awake.className = "pill on";
+  } else if (status.sleep_locked || status.usb_power_locked) {
+    awake.textContent = "AWAKE PARTIAL";
+    awake.className = "pill warn";
+  } else {
+    awake.textContent = "SLEEP RISK";
+    awake.className = "pill off";
+  }
+
+  awake.title = [
+    "Pi sleep/hibernate lock: " + (status.sleep_locked ? "ON" : "OFF"),
+    "CANable USB autosuspend lock: " + (status.usb_power_locked ? "ON" : "OFF"),
+    "Controller watchdog: " + (status.watchdog_armed ? "ARMED" : "OFF")
+  ].join("\n");
+}
+
 async function live() {
   try {
     const data = await (await fetch("/api/live", {cache: "no-store"})).json();
@@ -25,6 +52,7 @@ async function live() {
     $("status").textContent = data.online ? "ONLINE" : "OFFLINE";
     $("status").className = "pill " + (data.online ? "on" : "off");
     $("cca").textContent = f(data.commanded_current);
+    updateAwakeStatus(data.keep_awake);
 
     if (!loaded) {
       const settings = data.settings;
@@ -34,7 +62,7 @@ async function live() {
       $("gp").value = settings.generator_power_target;
       $("gf").value = settings.generator_calibration_factor;
       $("en").checked = settings.control_enabled;
-      $("dv").value = settings.target_voltage;
+      $("dv").value = settings.persistent_fallback_voltage == null ? 43.7 : settings.persistent_fallback_voltage;
       $("vl").textContent = settings.min_voltage + "–" + settings.max_voltage + " V";
       $("cl").textContent = settings.min_current + "–" + settings.max_current + " A";
       updateControlVisibility();
@@ -47,6 +75,8 @@ async function live() {
   } catch (error) {
     $("status").textContent = "SERVER ERROR";
     $("status").className = "pill off";
+    $("awake").textContent = "AWAKE UNKNOWN";
+    $("awake").className = "pill warn";
   }
 }
 
@@ -134,7 +164,13 @@ $("write").onclick = async () => {
       confirmation: $("confirm").value
     })
   })).json();
-  $("dres").textContent = result.ok ? "Persistent command sent." : "Blocked: " + result.error;
+  if (result.ok) {
+    $("dv").value = result.persistent_fallback_voltage;
+    $("confirm").value = "";
+    $("dres").textContent = "Persistent CAN-failure fallback written: " + Number(result.persistent_fallback_voltage).toFixed(1) + " V.";
+  } else {
+    $("dres").textContent = "Blocked: " + result.error;
+  }
 };
 
 live();

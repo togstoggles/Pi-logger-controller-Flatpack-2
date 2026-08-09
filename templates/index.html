@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Flatpack Controller</title>
-  <link rel="stylesheet" href="/static/style.css?v=generator-power-2">
+  <link rel="stylesheet" href="/static/style.css?v=v2-2-fallback-awake">
 </head>
 <body>
 <header>
   <div><h1>ELTEK FLATPACK</h1><p>CAN monitor, logger and guarded controller</p></div>
-  <div id="status" class="pill off">OFFLINE</div>
+  <div class="status-group">
+    <div id="awake" class="pill warn">AWAKE CHECK…</div>
+    <div id="status" class="pill off">OFFLINE</div>
+  </div>
 </header>
 <main>
   <section class="cards">
@@ -62,13 +65,14 @@
       </div>
       <label class="check"><input id="en" type="checkbox">Continuously transmit setpoints</label>
       <button id="apply">Apply settings</button><p id="res"></p>
-      <details>
-        <summary>Write persistent default voltage</summary>
-        <p>This applies when CAN control times out.</p>
-        <label>Default voltage<input id="dv" type="number" step=".1"></label>
-        <label>Type <code>WRITE DEFAULT</code><input id="confirm"></label>
-        <button class="danger" id="write">Write persistent default</button><p id="dres"></p>
-      </details>
+
+      <div class="fallback-box">
+        <h3>CAN failure fallback</h3>
+        <p>This is stored persistently in the Flatpack. If CAN control stops, the charger falls back to this voltage. Setting it below normal battery voltage means charging should normally stop instead of reverting to an uncontrolled high-current charge.</p>
+        <label>Fallback voltage<input id="dv" type="number" min="40" max="55.6" step=".1"><small>Recommended for this setup: 43.7 V</small></label>
+        <label>Type <code>WRITE FALLBACK</code><input id="confirm"></label>
+        <button class="danger" id="write">Write persistent fallback</button><p id="dres"></p>
+      </div>
     </article>
 
     <article class="panel">
@@ -82,6 +86,6 @@
     </article>
   </section>
 </main>
-<script src="/static/app.js?v=generator-power-2"></script>
+<script src="/static/app.js?v=v2-2-fallback-awake"></script>
 </body>
 </html>

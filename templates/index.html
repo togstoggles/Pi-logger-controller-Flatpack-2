@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Flatpack Controller</title>
-  <link rel="stylesheet" href="/static/style.css?v=v2-2-fallback-awake">
+  <link rel="stylesheet" href="/static/style.css?v=v2-3-ramp-feedback">
 </head>
 <body>
 <header>
   <div><h1>ELTEK FLATPACK</h1><p>CAN monitor, logger and guarded controller</p></div>
   <div class="status-group">
     <div id="awake" class="pill warn">AWAKE CHECK…</div>
+    <div id="genctl" class="pill warn">GEN WAIT</div>
     <div id="status" class="pill off">OFFLINE</div>
   </div>
 </header>
@@ -57,6 +58,7 @@
       <div id="power-controls">
         <label>Generator power target<input id="gp" type="number" min="100" max="3000" step="10"><small>Desired AC load shown by your generator meter</small></label>
         <label>Calibration factor<input id="gf" type="number" min="1" max="2" step=".001"><small>Generator AC watts ÷ charger DC watts</small></label>
+        <p><small>Soft start: about 30 seconds. Manual current limit is also a hard ceiling in generator-power mode. Low AC voltage pauses or reduces charging; an AC trip resets to a light load and ramps again.</small></p>
         <hr>
         <h3>Calibrate from plug-in meter</h3>
         <p>Wait for charging to stabilise, enter the generator meter reading, then calculate.</p>
@@ -79,6 +81,7 @@
       <h2>CAN activity</h2>
       <div class="meta">
         <span>State</span><b id="mode">—</b>
+        <span>Generator control</span><b id="gstate">—</b>
         <span>Last frame</span><b id="seen">—</b>
         <span>Status ID</span><b id="cid">—</b>
       </div>
@@ -86,6 +89,6 @@
     </article>
   </section>
 </main>
-<script src="/static/app.js?v=v2-2-fallback-awake"></script>
+<script src="/static/app.js?v=v2-3-ramp-feedback"></script>
 </body>
 </html>

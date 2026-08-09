@@ -35,6 +35,41 @@ function updateAwakeStatus(status) {
   ].join("\n");
 }
 
+function updateGeneratorControl(status) {
+  const el = $("genctl");
+  if (!status) {
+    el.textContent = "GEN UNKNOWN";
+    el.className = "pill warn";
+    $("gstate").textContent = "—";
+    return;
+  }
+
+  const state = status.state || "UNKNOWN";
+  let label = state;
+  if (state === "RAMPING") {
+    label = "RAMP " + Math.round((status.ramp_progress || 0) * 100) + "%";
+    el.className = "pill warn";
+  } else if (state === "STABLE") {
+    label = "GEN STABLE";
+    el.className = "pill on";
+  } else if (state === "AC TRIP") {
+    label = "AC TRIP";
+    el.className = "pill off";
+  } else if (state.indexOf("AC LOW") === 0 || state === "AC STABILISING" || state === "WAITING AC") {
+    el.className = "pill warn";
+  } else {
+    el.className = "pill warn";
+  }
+  el.textContent = label;
+
+  const details = [state];
+  if (status.target_current != null) details.push("target " + Number(status.target_current).toFixed(1) + " A");
+  if (status.adaptive_current_cap != null) details.push("adaptive cap " + Number(status.adaptive_current_cap).toFixed(1) + " A");
+  if (status.trip_count) details.push(status.trip_count + " trip" + (status.trip_count === 1 ? "" : "s"));
+  $("gstate").textContent = details.join(" · ");
+  el.title = details.join("\n");
+}
+
 async function live() {
   try {
     const data = await (await fetch("/api/live", {cache: "no-store"})).json();
@@ -53,6 +88,7 @@ async function live() {
     $("status").className = "pill " + (data.online ? "on" : "off");
     $("cca").textContent = f(data.commanded_current);
     updateAwakeStatus(data.keep_awake);
+    updateGeneratorControl(data.generator_control);
 
     if (!loaded) {
       const settings = data.settings;
@@ -77,6 +113,8 @@ async function live() {
     $("status").className = "pill off";
     $("awake").textContent = "AWAKE UNKNOWN";
     $("awake").className = "pill warn";
+    $("genctl").textContent = "GEN UNKNOWN";
+    $("genctl").className = "pill warn";
   }
 }
 
@@ -138,7 +176,7 @@ $("apply").onclick = async () => {
       generator_calibration_factor: Number($("gf").value)
     })
   })).json();
-  $("res").textContent = result.ok ? "Settings applied." : "Blocked: " + result.error;
+  $("res").textContent = result.ok ? "Settings applied. Generator soft-start reset." : "Blocked: " + result.error;
 };
 
 $("calibrate").onclick = async () => {

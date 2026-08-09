@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import unittest
 
 from flatpack import FlatpackController
@@ -112,12 +113,65 @@ class FlatpackDecoderTests(unittest.TestCase):
         self.assertTrue(base.decode(0x05014004, data))
         self.assertTrue(runtime.decode(0x05014004, data))
 
-    def test_constant_power_current_uses_live_voltage_and_calibration(self):
+    def test_constant_power_target_uses_live_voltage_and_calibration(self):
         ctl = self.make_controller(RuntimeController)
         ctl.cfg["control_mode"] = "constant_power"
+        ctl.cfg["current_limit"] = 38.0
         ctl.state["voltage"] = 55.0
-        current = ctl._control_current()
+        current = ctl._constant_power_target_current()
         self.assertAlmostEqual(current, (1700.0 / 1.10) / 55.0, places=3)
+
+    def test_manual_current_is_hard_ceiling_in_constant_power_mode(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.cfg.update(control_mode="constant_power", current_limit=20.0, generator_recovery_hold_seconds=0.0)
+        ctl.state.update(voltage=55.0, input_voltage=235, state_code=0x08)
+        ctl.last_frame = time.time()
+        ctl.generator_had_good_ac = True
+        ctl.generator_ramp_started = time.time() - 31.0
+        current = ctl._control_current()
+        self.assertAlmostEqual(current, 20.0, places=2)
+
+    def test_generator_soft_start_ramps_over_thirty_seconds(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.cfg.update(
+            control_mode="constant_power",
+            current_limit=38.0,
+            generator_recovery_hold_seconds=0.0,
+            generator_ramp_seconds=30.0,
+            generator_start_current=3.0,
+        )
+        ctl.state.update(voltage=55.0, input_voltage=235, state_code=0x08)
+        ctl.last_frame = time.time()
+        start = ctl._control_current()
+        self.assertAlmostEqual(start, 3.0, places=1)
+        ctl.generator_ramp_started = time.time() - 15.0
+        halfway = ctl._control_current()
+        target = ctl._constant_power_target_current()
+        self.assertAlmostEqual(halfway, 3.0 + (target - 3.0) * 0.5, delta=0.3)
+        self.assertEqual(ctl.generator_control_state, "RAMPING")
+
+    def test_brownout_feedback_backs_current_off(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.cfg.update(control_mode="constant_power", current_limit=38.0)
+        ctl.state.update(voltage=55.0, input_voltage=205, state_code=0x08)
+        ctl.last_frame = time.time()
+        ctl.last_commanded_current = 20.0
+        current = ctl._control_current()
+        self.assertAlmostEqual(current, 18.0, places=1)
+        self.assertEqual(ctl.generator_control_state, "AC LOW - BACKING OFF")
+
+    def test_hard_ac_trip_resets_to_start_current_and_learns_lower_cap(self):
+        ctl = self.make_controller(RuntimeController)
+        ctl.cfg.update(control_mode="constant_power", current_limit=38.0, generator_start_current=3.0)
+        ctl.state.update(voltage=55.0, input_voltage=0, state_code=0x0C)
+        ctl.last_frame = time.time()
+        ctl.last_commanded_current = 20.0
+        ctl.generator_had_good_ac = True
+        current = ctl._control_current()
+        self.assertAlmostEqual(current, 3.0, places=1)
+        self.assertEqual(ctl.generator_control_state, "AC TRIP")
+        self.assertEqual(ctl.generator_trip_count, 1)
+        self.assertAlmostEqual(ctl.generator_adaptive_current_cap, 17.0, places=1)
 
     def test_calibration_uses_meter_watts_over_dc_watts(self):
         ctl = self.make_controller(RuntimeController)

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Flatpack Controller</title>
-  <link rel="stylesheet" href="/static/style.css?v=v2-3-ramp-feedback">
+  <link rel="stylesheet" href="/static/style.css?v=v2-4-ramp-editable">
 </head>
 <body>
 <header>
@@ -56,9 +56,10 @@
       <label>Target voltage<input id="tv" type="number" step=".1"><small id="vl"></small></label>
       <label>Manual current limit<input id="ci" type="number" step=".5"><small id="cl"></small></label>
       <div id="power-controls">
-        <label>Generator power target<input id="gp" type="number" min="100" max="3000" step="10"><small>Desired AC load shown by your generator meter</small></label>
-        <label>Calibration factor<input id="gf" type="number" min="1" max="2" step=".001"><small>Generator AC watts ÷ charger DC watts</small></label>
-        <p><small>Soft start: about 30 seconds. Manual current limit is also a hard ceiling in generator-power mode. Low AC voltage pauses or reduces charging; an AC trip resets to a light load and ramps again.</small></p>
+        <label>Generator power target<input id="gp" type="number" min="200" max="2500" step="10"><small>Desired AC load shown by your generator meter</small></label>
+        <label>Ramp time<input id="gr" type="number" min="5" max="300" step="1"><small>Seconds to ramp from the 3 A soft-start current to the active target</small></label>
+        <label>Calibration factor<input id="gf" type="number" min="1" max="1.5" step=".001"><small>Generator AC watts ÷ charger DC watts</small></label>
+        <p><small>Manual current limit is a hard ceiling in generator-power mode. If that ceiling is lower than the power target requires, changing the power target upward will not increase charging current.</small></p>
         <hr>
         <h3>Calibrate from plug-in meter</h3>
         <p>Wait for charging to stabilise, enter the generator meter reading, then calculate.</p>
@@ -89,6 +90,6 @@
     </article>
   </section>
 </main>
-<script src="/static/app.js?v=v2-3-ramp-feedback"></script>
+<script src="/static/app.js?v=v2-4-ramp-editable"></script>
 </body>
 </html>

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Flatpack Controller</title>
-  <link rel="stylesheet" href="/static/style.css?v=v2-4-ramp-editable">
+  <link rel="stylesheet" href="/static/style.css?v=v2-5-chart-zoom">
 </head>
 <body>
 <header>
@@ -29,10 +29,16 @@
 
   <section class="panel">
     <div class="head">
-      <div><h2>24-hour history</h2><p id="state">Waiting for telemetry</p></div>
+      <div><h2 id="history-title">5-hour history</h2><p id="state">Waiting for telemetry</p></div>
       <a href="/api/export.csv?hours=168">Export CSV</a>
     </div>
-    <div class="tabs">
+    <div class="tabs range-tabs">
+      <button data-hours="1">1h</button>
+      <button data-hours="5" class="active">5h</button>
+      <button data-hours="12">12h</button>
+      <button data-hours="24">24h</button>
+    </div>
+    <div class="tabs series-tabs">
       <button data-s="voltage" class="active">Voltage</button>
       <button data-s="current">Current</button>
       <button data-s="power">Power</button>
@@ -90,6 +96,6 @@
     </article>
   </section>
 </main>
-<script src="/static/app.js?v=v2-4-ramp-editable"></script>
+<script src="/static/app.js?v=v2-5-chart-zoom"></script>
 </body>
 </html>

@@ -63,7 +63,9 @@ function updateGeneratorControl(status) {
   el.textContent = label;
 
   const details = [state];
+  if (status.requested_current != null) details.push("power asks " + Number(status.requested_current).toFixed(1) + " A");
   if (status.target_current != null) details.push("target " + Number(status.target_current).toFixed(1) + " A");
+  if (status.limit_reason) details.push(status.limit_reason);
   if (status.adaptive_current_cap != null) details.push("adaptive cap " + Number(status.adaptive_current_cap).toFixed(1) + " A");
   if (status.trip_count) details.push(status.trip_count + " trip" + (status.trip_count === 1 ? "" : "s"));
   $("gstate").textContent = details.join(" · ");
@@ -96,6 +98,7 @@ async function live() {
       $("ci").value = settings.current_limit;
       $("cm").value = settings.control_mode || "manual";
       $("gp").value = settings.generator_power_target;
+      $("gr").value = settings.generator_ramp_seconds == null ? 30 : settings.generator_ramp_seconds;
       $("gf").value = settings.generator_calibration_factor;
       $("en").checked = settings.control_enabled;
       $("dv").value = settings.persistent_fallback_voltage == null ? 43.7 : settings.persistent_fallback_voltage;
@@ -173,10 +176,17 @@ $("apply").onclick = async () => {
       control_enabled: $("en").checked,
       control_mode: $("cm").value,
       generator_power_target: Number($("gp").value),
-      generator_calibration_factor: Number($("gf").value)
+      generator_calibration_factor: Number($("gf").value),
+      generator_ramp_seconds: Number($("gr").value)
     })
   })).json();
-  $("res").textContent = result.ok ? "Settings applied. Generator soft-start reset." : "Blocked: " + result.error;
+  if (result.ok) {
+    $("gp").value = result.settings.generator_power_target;
+    $("gr").value = result.settings.generator_ramp_seconds;
+    $("res").textContent = "Applied: " + Number(result.settings.generator_power_target).toFixed(0) + " W target, " + Number(result.settings.generator_ramp_seconds).toFixed(0) + " s ramp. Soft-start reset.";
+  } else {
+    $("res").textContent = "Blocked: " + result.error;
+  }
 };
 
 $("calibrate").onclick = async () => {

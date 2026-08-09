@@ -103,6 +103,7 @@ def settings():
             body.get("control_mode", "manual"),
             body.get("generator_power_target"),
             body.get("generator_calibration_factor"),
+            body.get("generator_ramp_seconds"),
         )
         return jsonify(ok=True, settings=ctl.snapshot()["settings"])
     except Exception as exc:

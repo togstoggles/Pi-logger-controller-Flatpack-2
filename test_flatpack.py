@@ -173,6 +173,29 @@ class FlatpackDecoderTests(unittest.TestCase):
         self.assertEqual(ctl.generator_trip_count, 1)
         self.assertAlmostEqual(ctl.generator_adaptive_current_cap, 17.0, places=1)
 
+    def test_alarm_state_with_healthy_ac_does_not_learn_trip_cap(self):
+        ctl = self.make_controller(RuntimeController)
+        now = time.time()
+        ctl.cfg.update(
+            control_mode="constant_power",
+            current_limit=38.0,
+            generator_recovery_hold_seconds=0.0,
+            generator_ramp_seconds=5.0,
+        )
+        ctl.state.update(voltage=52.5, input_voltage=239, state_code=0x0C)
+        ctl.last_frame = now
+        ctl.last_commanded_current = 27.0
+        ctl.generator_had_good_ac = True
+        ctl.generator_ramp_started = now - 10.0
+        ctl.generator_stable_since = now - 10.0
+
+        current = ctl._control_current()
+        expected = (1700.0 / 1.10) / 52.5
+        self.assertAlmostEqual(current, expected, delta=0.2)
+        self.assertIsNone(ctl.generator_adaptive_current_cap)
+        self.assertEqual(ctl.generator_trip_count, 0)
+        self.assertEqual(ctl.generator_alarm_with_ac_count, 1)
+
     def test_learned_trip_cap_relaxes_after_stable_ac(self):
         ctl = self.make_controller(RuntimeController)
         now = time.time()

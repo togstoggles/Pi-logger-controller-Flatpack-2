@@ -29,6 +29,9 @@ class FlatpackController(BaseController):
         self.cfg.setdefault("generator_brownout_voltage", 215.0)
         self.cfg.setdefault("generator_recover_voltage", 225.0)
         self.cfg.setdefault("generator_trip_backoff", 0.85)
+        self.cfg.setdefault("generator_cap_relax_delay_seconds", 60.0)
+        self.cfg.setdefault("generator_cap_relax_interval_seconds", 10.0)
+        self.cfg.setdefault("generator_cap_relax_step_amps", 1.0)
         self.frames_received = 0
         self.status_frames_received = 0
         self.rejected_status_frames = 0
@@ -46,6 +49,8 @@ class FlatpackController(BaseController):
         self.generator_limit_reason = None
         self.generator_ramp_progress = 0.0
         self.generator_had_good_ac = False
+        self.generator_stable_since = 0.0
+        self.generator_last_cap_relax = 0.0
         self._remove_invalid_history()
 
     def _remove_invalid_history(self):
@@ -76,7 +81,7 @@ class FlatpackController(BaseController):
             0 <= temp_outlet <= 120
         )
 
-    def _constant_power_target_current(self):
+    def _power_target_without_trip_cap(self):
         voltage = self.state.get("voltage") or float(self.cfg["target_voltage"])
         factor = max(1.0, float(self.cfg.get("generator_calibration_factor", 1.10)))
         generator_watts = float(self.cfg.get("generator_power_target", 1500.0))
@@ -97,7 +102,10 @@ class FlatpackController(BaseController):
             current = system_max
             self.generator_limit_reason = "SYSTEM MAX"
 
-        current = max(float(self.cfg["min_current"]), current)
+        return max(float(self.cfg["min_current"]), current)
+
+    def _constant_power_target_current(self):
+        current = self._power_target_without_trip_cap()
         if self.generator_adaptive_current_cap is not None and current > float(self.generator_adaptive_current_cap):
             current = float(self.generator_adaptive_current_cap)
             self.generator_limit_reason = "LEARNED TRIP CAP"
@@ -114,6 +122,10 @@ class FlatpackController(BaseController):
         timeout = max(10.0, float(self.cfg.get("offline_after_seconds", 8.0)))
         return now - self.last_frame > timeout
 
+    def _reset_generator_stability(self):
+        self.generator_stable_since = 0.0
+        self.generator_last_cap_relax = 0.0
+
     def _register_generator_trip(self, now, start_current):
         previous = float(self.last_commanded_current or start_current)
         if previous > start_current + 0.5 and now - self.generator_last_trip > 3.0:
@@ -125,6 +137,37 @@ class FlatpackController(BaseController):
                 self.generator_adaptive_current_cap = min(self.generator_adaptive_current_cap, learned)
             self.generator_trip_count += 1
             self.generator_last_trip = now
+        self._reset_generator_stability()
+
+    def _relax_adaptive_cap(self, now):
+        """Gently probe upward after healthy AC instead of staying stuck at a trip cap."""
+        if self.generator_adaptive_current_cap is None:
+            return False
+
+        if not self.generator_stable_since:
+            self.generator_stable_since = now
+            return False
+
+        delay = max(0.0, float(self.cfg.get("generator_cap_relax_delay_seconds", 60.0)))
+        if now - self.generator_stable_since < delay:
+            return False
+
+        interval = max(2.0, float(self.cfg.get("generator_cap_relax_interval_seconds", 10.0)))
+        if self.generator_last_cap_relax and now - self.generator_last_cap_relax < interval:
+            return False
+
+        uncapped_target = self._power_target_without_trip_cap()
+        cap = float(self.generator_adaptive_current_cap)
+        step = max(0.1, float(self.cfg.get("generator_cap_relax_step_amps", 1.0)))
+
+        if cap >= uncapped_target - 0.05:
+            self.generator_adaptive_current_cap = None
+        else:
+            new_cap = min(uncapped_target, cap + step)
+            self.generator_adaptive_current_cap = None if new_cap >= uncapped_target - 0.05 else new_cap
+
+        self.generator_last_cap_relax = now
+        return True
 
     def _control_current(self):
         if self.cfg.get("control_mode") != "constant_power":
@@ -133,6 +176,7 @@ class FlatpackController(BaseController):
             self.generator_requested_current = float(self.cfg["current_limit"])
             self.generator_target_current = float(self.cfg["current_limit"])
             self.generator_limit_reason = "MANUAL"
+            self._reset_generator_stability()
             return float(self.cfg["current_limit"])
 
         now = time.time()
@@ -148,6 +192,7 @@ class FlatpackController(BaseController):
             self.generator_recover_since = 0.0
             self.generator_ramp_progress = 0.0
             self.generator_had_good_ac = False
+            self._reset_generator_stability()
             self.last_commanded_current = start_current
             return start_current
 
@@ -173,6 +218,7 @@ class FlatpackController(BaseController):
             self.generator_ramp_started = 0.0
             self.generator_recover_since = 0.0
             self.generator_ramp_progress = 0.0
+            self._reset_generator_stability()
             self.last_commanded_current = reduced
             return reduced
 
@@ -182,6 +228,7 @@ class FlatpackController(BaseController):
             self.generator_ramp_started = 0.0
             self.generator_recover_since = 0.0
             self.generator_ramp_progress = 0.0
+            self._reset_generator_stability()
             self.last_commanded_current = max(start_current, hold)
             return self.last_commanded_current
 
@@ -192,11 +239,21 @@ class FlatpackController(BaseController):
             if now - self.generator_recover_since < hold_seconds:
                 self.generator_control_state = "AC STABILISING"
                 self.generator_ramp_progress = 0.0
+                self._reset_generator_stability()
                 self.last_commanded_current = start_current
                 return start_current
             self.generator_had_good_ac = True
             self.generator_ramp_started = now
             self.generator_recover_since = 0.0
+            self.generator_stable_since = now
+
+        if not self.generator_stable_since:
+            self.generator_stable_since = now
+
+        self._relax_adaptive_cap(now)
+        target = self._constant_power_target_current()
+        self.generator_target_current = target
+        start_current = self._start_current(target)
 
         if not self.generator_ramp_started:
             self.generator_ramp_started = now
@@ -206,7 +263,13 @@ class FlatpackController(BaseController):
         current = start_current + (target - start_current) * progress
         self.generator_ramp_progress = progress
 
-        if progress < 1.0:
+        if self.generator_adaptive_current_cap is not None:
+            delay = max(0.0, float(self.cfg.get("generator_cap_relax_delay_seconds", 60.0)))
+            if now - self.generator_stable_since < delay:
+                self.generator_control_state = "CAP HOLD"
+            else:
+                self.generator_control_state = "CAP RECOVERY"
+        elif progress < 1.0:
             self.generator_control_state = "RAMPING"
         else:
             self.generator_control_state = "STABLE"
@@ -268,6 +331,7 @@ class FlatpackController(BaseController):
             self.generator_requested_current = None
             self.generator_target_current = None
             self.generator_limit_reason = None
+            self._reset_generator_stability()
             self.save()
         if enabled:
             self.login()
@@ -290,6 +354,7 @@ class FlatpackController(BaseController):
             self.generator_ramp_started = 0.0
             self.generator_recover_since = 0.0
             self.generator_had_good_ac = False
+            self._reset_generator_stability()
             self.save()
         return self.cfg["generator_calibration_factor"]
 
@@ -343,8 +408,11 @@ class FlatpackController(BaseController):
 
     def snapshot(self):
         snapshot = super().snapshot()
+        now = time.time()
         factor = float(self.cfg.get("generator_calibration_factor", 1.10))
         expected_ids = ["0x%08X" % can_id for can_id in sorted(self.STATUS_IDS)]
+        stable_seconds = 0.0 if not self.generator_stable_since else max(0.0, now - self.generator_stable_since)
+        relax_delay = max(0.0, float(self.cfg.get("generator_cap_relax_delay_seconds", 60.0)))
         snapshot["estimated_generator_power"] = round(float(snapshot.get("power") or 0.0) * factor, 0)
         snapshot["commanded_current"] = None if self.last_commanded_current is None else round(self.last_commanded_current, 1)
         snapshot["settings"].update({
@@ -364,6 +432,10 @@ class FlatpackController(BaseController):
             "ramp_seconds": float(self.cfg.get("generator_ramp_seconds", 30.0)),
             "brownout_voltage": float(self.cfg.get("generator_brownout_voltage", 215.0)),
             "recover_voltage": float(self.cfg.get("generator_recover_voltage", 225.0)),
+            "stable_seconds": round(stable_seconds, 1),
+            "cap_relax_in_seconds": None if self.generator_adaptive_current_cap is None else round(max(0.0, relax_delay - stable_seconds), 1),
+            "cap_relax_step_amps": float(self.cfg.get("generator_cap_relax_step_amps", 1.0)),
+            "cap_relax_interval_seconds": float(self.cfg.get("generator_cap_relax_interval_seconds", 10.0)),
         }
         snapshot["diagnostics"].update({
             "frames_received": self.frames_received,
@@ -376,5 +448,6 @@ class FlatpackController(BaseController):
             "generator_control_state": self.generator_control_state,
             "generator_trip_count": self.generator_trip_count,
             "generator_limit_reason": self.generator_limit_reason,
+            "generator_stable_seconds": round(stable_seconds, 1),
         })
         return snapshot

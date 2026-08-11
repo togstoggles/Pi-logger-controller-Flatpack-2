@@ -51,6 +51,8 @@ class FlatpackController(BaseController):
         self.generator_had_good_ac = False
         self.generator_stable_since = 0.0
         self.generator_last_cap_relax = 0.0
+        self.generator_alarm_with_ac_count = 0
+        self.generator_last_alarm_with_ac = 0.0
         self._remove_invalid_history()
 
     def _remove_invalid_history(self):
@@ -201,7 +203,11 @@ class FlatpackController(BaseController):
         brownout_voltage = float(self.cfg.get("generator_brownout_voltage", 215.0))
         recover_voltage = float(self.cfg.get("generator_recover_voltage", 225.0))
 
-        if vin < trip_voltage or state_code == 0x0C:
+        # Only learn a generator trip from actual AC collapse. The Flatpack can
+        # briefly report its Alarm state while healthy mains is still present;
+        # treating every 0x0C frame as a generator trip falsely ratchets the
+        # adaptive current cap down (e.g. ~1500 W -> ~1000 W after two alarms).
+        if vin < trip_voltage:
             self._register_generator_trip(now, start_current)
             self.generator_control_state = "AC TRIP"
             self.generator_ramp_started = 0.0
@@ -210,6 +216,10 @@ class FlatpackController(BaseController):
             self.generator_had_good_ac = False
             self.last_commanded_current = start_current
             return start_current
+
+        if state_code == 0x0C:
+            self.generator_alarm_with_ac_count += 1
+            self.generator_last_alarm_with_ac = now
 
         if vin < brownout_voltage:
             previous = float(self.last_commanded_current or start_current)
@@ -331,6 +341,8 @@ class FlatpackController(BaseController):
             self.generator_requested_current = None
             self.generator_target_current = None
             self.generator_limit_reason = None
+            self.generator_alarm_with_ac_count = 0
+            self.generator_last_alarm_with_ac = 0.0
             self._reset_generator_stability()
             self.save()
         if enabled:
@@ -436,6 +448,7 @@ class FlatpackController(BaseController):
             "cap_relax_in_seconds": None if self.generator_adaptive_current_cap is None else round(max(0.0, relax_delay - stable_seconds), 1),
             "cap_relax_step_amps": float(self.cfg.get("generator_cap_relax_step_amps", 1.0)),
             "cap_relax_interval_seconds": float(self.cfg.get("generator_cap_relax_interval_seconds", 10.0)),
+            "alarm_with_ac_count": self.generator_alarm_with_ac_count,
         }
         snapshot["diagnostics"].update({
             "frames_received": self.frames_received,
@@ -449,5 +462,7 @@ class FlatpackController(BaseController):
             "generator_trip_count": self.generator_trip_count,
             "generator_limit_reason": self.generator_limit_reason,
             "generator_stable_seconds": round(stable_seconds, 1),
+            "generator_alarm_with_ac_count": self.generator_alarm_with_ac_count,
+            "generator_last_alarm_with_ac": self.generator_last_alarm_with_ac or None,
         })
         return snapshot

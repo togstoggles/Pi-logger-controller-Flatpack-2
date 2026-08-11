@@ -173,6 +173,43 @@ class FlatpackDecoderTests(unittest.TestCase):
         self.assertEqual(ctl.generator_trip_count, 1)
         self.assertAlmostEqual(ctl.generator_adaptive_current_cap, 17.0, places=1)
 
+    def test_learned_trip_cap_relaxes_after_stable_ac(self):
+        ctl = self.make_controller(RuntimeController)
+        now = time.time()
+        ctl.cfg.update(
+            control_mode="constant_power",
+            current_limit=38.0,
+            generator_recovery_hold_seconds=0.0,
+            generator_ramp_seconds=5.0,
+            generator_cap_relax_delay_seconds=60.0,
+            generator_cap_relax_interval_seconds=10.0,
+            generator_cap_relax_step_amps=1.0,
+        )
+        ctl.state.update(voltage=55.0, input_voltage=240, state_code=0x08)
+        ctl.last_frame = now
+        ctl.generator_had_good_ac = True
+        ctl.generator_ramp_started = now - 120.0
+        ctl.generator_stable_since = now - 61.0
+        ctl.generator_adaptive_current_cap = 5.0
+        ctl.last_commanded_current = 5.0
+
+        current = ctl._control_current()
+        self.assertAlmostEqual(ctl.generator_adaptive_current_cap, 6.0, delta=0.1)
+        self.assertAlmostEqual(current, 6.0, delta=0.2)
+        self.assertEqual(ctl.generator_control_state, "CAP RECOVERY")
+
+    def test_brownout_resets_cap_recovery_timer(self):
+        ctl = self.make_controller(RuntimeController)
+        now = time.time()
+        ctl.cfg.update(control_mode="constant_power", current_limit=38.0)
+        ctl.state.update(voltage=55.0, input_voltage=205, state_code=0x08)
+        ctl.last_frame = now
+        ctl.generator_stable_since = now - 100.0
+        ctl.generator_adaptive_current_cap = 8.0
+        ctl.last_commanded_current = 8.0
+        ctl._control_current()
+        self.assertEqual(ctl.generator_stable_since, 0.0)
+
     def test_calibration_uses_meter_watts_over_dc_watts(self):
         ctl = self.make_controller(RuntimeController)
         ctl.state["power"] = 1500.0
